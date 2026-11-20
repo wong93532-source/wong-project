@@ -1,0 +1,2134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3x3 三阶魔方求解器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        :root {
+            --cubie-size: 62px;
+            --half-cubie: 31px;
+            --step: 64px;
+        }
+        @media (max-width: 640px) {
+            :root {
+                --cubie-size: 50px;
+                --half-cubie: 25px;
+                --step: 52px;
+            }
+        }
+        * {
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+            background-color: #090d16;
+            color: #f1f5f9;
+            overflow-x: hidden;
+        }
+        /* 自定义滚动条 */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #0f172a; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+        /* 3D 魔方舞台与立体渲染引擎（零外部依赖，100% 稳定显示） */
+        .cube-stage {
+            perspective: 1100px;
+            width: 100%;
+            height: 100%;
+            min-height: 340px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            user-select: none;
+            touch-action: none;
+            cursor: grab;
+        }
+        .cube-stage:active {
+            cursor: grabbing;
+        }
+        .cube-world {
+            width: 0;
+            height: 0;
+            position: relative;
+            transform-style: preserve-3d;
+            will-change: transform;
+        }
+        .layer-pivot {
+            width: 0;
+            height: 0;
+            position: absolute;
+            top: 0;
+            left: 0;
+            transform-style: preserve-3d;
+            will-change: transform;
+        }
+        .cubie {
+            position: absolute;
+            width: var(--cubie-size);
+            height: var(--cubie-size);
+            margin-left: calc(var(--half-cubie) * -1);
+            margin-top: calc(var(--half-cubie) * -1);
+            transform-style: preserve-3d;
+            will-change: transform;
+        }
+        .cubie-face {
+            position: absolute;
+            width: var(--cubie-size);
+            height: var(--cubie-size);
+            background-color: #111827;
+            border-radius: 7px;
+            padding: 3.5px;
+            backface-visibility: hidden;
+            box-shadow: inset 0 0 0 1.5px #030712;
+        }
+        .cubie-face.face-U { transform: rotateX(90deg) translateZ(var(--half-cubie)); }
+        .cubie-face.face-D { transform: rotateX(-90deg) translateZ(var(--half-cubie)); }
+        .cubie-face.face-F { transform: rotateY(0deg) translateZ(var(--half-cubie)); }
+        .cubie-face.face-B { transform: rotateY(180deg) translateZ(var(--half-cubie)); }
+        .cubie-face.face-R { transform: rotateY(90deg) translateZ(var(--half-cubie)); }
+        .cubie-face.face-L { transform: rotateY(-90deg) translateZ(var(--half-cubie)); }
+
+        .sticker-3d {
+            width: 100%;
+            height: 100%;
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 12px;
+            box-shadow: inset 0 2px 3px rgba(255,255,255,0.28), inset 0 -2px 4px rgba(0,0,0,0.25);
+            transition: filter 0.12s ease, transform 0.12s ease;
+        }
+        .sticker-3d.paintable:hover {
+            filter: brightness(1.12);
+            cursor: pointer;
+        }
+        .sticker-3d.layer-highlight {
+            box-shadow: inset 0 0 0 2.5px #38bdf8, 0 0 10px rgba(56, 189, 248, 0.7);
+        }
+
+        /* 2D 平面展开图样式 */
+        .sticker-2d {
+            transition: transform 0.1s ease, box-shadow 0.1s ease;
+        }
+        .sticker-2d:not(.is-center):hover {
+            transform: scale(1.08);
+            z-index: 10;
+            box-shadow: 0 0 8px rgba(255, 255, 255, 0.65);
+        }
+        .sticker-2d:not(.is-center):active {
+            transform: scale(0.94);
+        }
+        .palette-btn.active {
+            transform: scale(1.12);
+            box-shadow: 0 0 0 3px #38bdf8, 0 0 14px rgba(56, 189, 248, 0.65);
+        }
+        .move-chip {
+            transition: all 0.15s ease;
+        }
+        .move-chip.current {
+            background-color: #0284c7;
+            color: #ffffff;
+            border-color: #38bdf8;
+            transform: scale(1.08);
+            box-shadow: 0 0 10px rgba(2, 132, 199, 0.75);
+        }
+        .move-chip.done {
+            background-color: #1e293b;
+            color: #64748b;
+            border-color: #334155;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col bg-slate-950 text-slate-100">
+
+    <!-- 顶部栏 -->
+    <header class="bg-slate-900/90 backdrop-blur border-b border-slate-800 px-3 sm:px-5 py-2.5 sticky top-0 z-30">
+        <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
+            <div class="flex items-center gap-2.5">
+                <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-sky-500/20 shrink-0">
+                    <svg class="w-5 h-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                        <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+                        <line x1="12" y1="22.08" x2="12" y2="12"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="text-base sm:text-lg font-bold tracking-tight text-white">3x3 三阶魔方求解器</h1>
+                    <p class="text-[11px] text-slate-400 hidden sm:block">内置 3D 立体模型 · 拍照/传图识别 · 两阶段极速求解</p>
+                </div>
+            </div>
+
+            <!-- 快捷功能按钮 -->
+            <div class="flex flex-wrap items-center gap-1.5">
+                <button id="btn-open-scanner" class="px-2.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold shadow-sm shadow-sky-500/30 transition flex items-center gap-1.5">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                    <span>拍照/传图识别</span>
+                </button>
+                <select id="scheme-select" class="px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 focus:outline-none">
+                    <option value="western">国际配色 (上白下黄)</option>
+                    <option value="japanese">日本配色 (上白下蓝)</option>
+                </select>
+                <select id="preset-select" class="px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 focus:outline-none">
+                    <option value="">图案预设...</option>
+                    <option value="solved">已还原状态</option>
+                    <option value="scramble">20步随机打乱</option>
+                    <option value="checkerboard">棋盘格图案</option>
+                    <option value="dot">中心点替换图案</option>
+                </select>
+                <button id="btn-scramble" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 text-xs font-medium border border-slate-700 transition">
+                    随机打乱
+                </button>
+                <button id="btn-reset" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 text-xs font-medium border border-slate-700 transition">
+                    还原状态
+                </button>
+                <button id="btn-clear" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-rose-300 text-xs font-medium border border-slate-700 transition">
+                    清空填色
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- 全局提示信息条 -->
+    <div id="message-banner" class="hidden max-w-7xl w-full mx-auto px-3 sm:px-5 pt-3">
+        <div id="message-box" class="rounded-xl p-3 border flex items-start gap-2.5 text-sm shadow-lg">
+            <div id="message-icon" class="mt-0.5 shrink-0"></div>
+            <div class="flex-1 min-w-0">
+                <h3 id="message-title" class="font-semibold text-xs sm:text-sm"></h3>
+                <p id="message-desc" class="text-xs opacity-90 mt-0.5 break-words"></p>
+            </div>
+            <button onclick="hideMessage()" class="text-slate-400 hover:text-white p-1 shrink-0" aria-label="关闭提示">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+    </div>
+
+    <!-- 主布局 -->
+    <main class="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-5 grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-5">
+
+        <!-- 左侧：3D 立体魔方模型与步骤播放器 (7列) -->
+        <section class="lg:col-span-7 flex flex-col bg-slate-900/80 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+            <div class="px-4 py-2.5 border-b border-slate-800 flex items-center justify-between bg-slate-900">
+                <div class="flex items-center gap-2">
+                    <span class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+                    <h2 class="font-semibold text-sm text-slate-100">3D 立体魔方模型</h2>
+                </div>
+                <div class="flex items-center gap-2 text-xs text-slate-400">
+                    <span class="hidden sm:inline">拖拽旋转视角 · 点击色块填色</span>
+                    <button id="btn-reset-cam" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition">
+                        重置视角
+                    </button>
+                </div>
+            </div>
+
+            <!-- 3D 魔方舞台 -->
+            <div class="relative flex-1 min-h-[340px] sm:min-h-[400px] bg-gradient-to-b from-slate-900 via-slate-950 to-slate-900 flex items-center justify-center overflow-hidden">
+                <div id="cube-stage" class="cube-stage">
+                    <div id="cube-world" class="cube-world"></div>
+                </div>
+
+                <!-- 左上角：朝向图例 -->
+                <div id="orientation-legend" class="absolute top-3 left-3 pointer-events-none bg-slate-900/85 backdrop-blur border border-slate-800 rounded-xl px-2.5 py-1.5 text-[11px] text-slate-300 space-y-0.5 shadow">
+                    <div><span class="text-white font-bold">U(上)</span>: 白 &nbsp;|&nbsp; <span class="text-yellow-400 font-bold">D(下)</span>: 黄</div>
+                    <div><span class="text-emerald-400 font-bold">F(前)</span>: 绿 &nbsp;|&nbsp; <span class="text-blue-400 font-bold">B(后)</span>: 蓝</div>
+                    <div><span class="text-orange-400 font-bold">L(左)</span>: 橙 &nbsp;|&nbsp; <span class="text-red-400 font-bold">R(右)</span>: 红</div>
+                </div>
+
+                <!-- 右上角：当前旋转层直观方向提示 HUD -->
+                <div id="hud-direction-card" class="hidden absolute top-3 right-3 pointer-events-none bg-sky-950/90 backdrop-blur border border-sky-500/60 rounded-xl px-3 py-2 text-xs text-sky-100 shadow-lg flex items-center gap-2.5">
+                    <div id="hud-arrow-svg" class="w-8 h-8 rounded-lg bg-sky-500/20 border border-sky-400/50 flex items-center justify-center shrink-0"></div>
+                    <div>
+                        <div id="hud-move-label" class="font-bold text-sky-300 font-mono text-sm">R</div>
+                        <div id="hud-move-hint" class="text-[11px] text-slate-200">右层顺时针转 90°</div>
+                    </div>
+                </div>
+
+                <!-- 底部：单层手动转动测试按钮 -->
+                <div class="absolute bottom-2.5 left-2.5 right-2.5 flex flex-wrap items-center justify-center gap-1 bg-slate-900/90 backdrop-blur border border-slate-800 rounded-xl p-1.5">
+                    <span class="text-[11px] text-slate-400 mr-1 hidden sm:inline">手动转动:</span>
+                    <button onclick="manualMove('U')" class="px-2 py-1 text-xs font-mono font-bold rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">U</button>
+                    <button onclick="manualMove('U\'')" class="px-2 py-1 text-xs font-mono font-bold rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">U'</button>
+                    <button onclick="manualMove('D')" class="px-2 py-1 text-xs font-mono font-bold rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">D</button>
+                    <button onclick="manualMove('D\'')" class="px-2 py-1 text-xs font-mono font-bold rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">D'</button>
+                    <button onclick="manualMove('L')" class="px-2 py-1 text-xs font-mono font-bold rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">L</button>
+                    <button onclick="manualMove('L\'')" class="px-2 py-1 text-xs font-mono font-bold rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">L'</button>
+                    <button onclick="manualMove('R')" class="px-2 py-1 text-xs font-mono font-bold rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">R</button>
+                    <button onclick="manualMove('R\'')" class="px-2 py-1 text-xs font-mono font-bold rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">R'</button>
+                    <button onclick="manualMove('F')" class="px-2 py-1 text-xs font-mono font-bold rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">F</button>
+                    <button onclick="manualMove('F\'')" class="px-2 py-1 text-xs font-mono font-bold rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">F'</button>
+                    <button onclick="manualMove('B')" class="px-2 py-1 text-xs font-mono font-bold rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">B</button>
+                    <button onclick="manualMove('B\'')" class="px-2 py-1 text-xs font-mono font-bold rounded bg-slate-800 hover:bg-slate-700 border border-slate-700">B'</button>
+                </div>
+            </div>
+
+            <!-- 还原步骤播放控制区 -->
+            <div class="border-t border-slate-800 bg-slate-900 p-3.5 sm:p-4 space-y-3">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div class="flex items-center gap-2">
+                        <span class="text-sm font-semibold text-sky-400">还原步骤演示</span>
+                        <span id="step-counter" class="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">未求解</span>
+                    </div>
+                    <div class="flex items-center gap-2 text-xs text-slate-400">
+                        <label for="speed-select">动画速度:</label>
+                        <select id="speed-select" class="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-slate-200 focus:outline-none">
+                            <option value="550">慢速 (0.55s)</option>
+                            <option value="320" selected>标准 (0.32s)</option>
+                            <option value="160">快速 (0.16s)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- 当前步骤说明卡片 -->
+                <div class="bg-slate-950/90 border border-slate-800 rounded-xl px-3 py-2.5 flex items-center gap-3">
+                    <div id="current-move-badge" class="w-10 h-10 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center font-mono font-bold text-lg text-sky-400 shrink-0">
+                        -
+                    </div>
+                    <div class="min-w-0">
+                        <div id="current-move-title" class="text-xs sm:text-sm font-semibold text-slate-100 truncate">请先录入魔方颜色，再点击“开始校验并求解魔方”</div>
+                        <div id="current-move-sub" class="text-[11px] sm:text-xs text-slate-400 truncate">支持键盘 ←/→ 单步切换、Space 自动播放</div>
+                    </div>
+                </div>
+
+                <!-- 公式序列标签栏 -->
+                <div id="moves-container" class="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto p-2 bg-slate-950/60 rounded-xl border border-slate-800/80 min-h-[42px] items-center">
+                    <span class="text-xs text-slate-500">求解后将在此显示标准还原公式，点击任意步骤可直接跳转...</span>
+                </div>
+
+                <!-- 播放控制按钮组 -->
+                <div class="grid grid-cols-4 gap-2">
+                    <button id="btn-prev" disabled class="py-2 px-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:pointer-events-none text-slate-200 text-xs sm:text-sm font-medium border border-slate-700 flex items-center justify-center gap-1 transition">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                        <span>上一步</span>
+                    </button>
+                    <button id="btn-play" disabled class="col-span-2 py-2 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-40 disabled:pointer-events-none text-white text-xs sm:text-sm font-semibold shadow-lg shadow-sky-600/20 flex items-center justify-center gap-1.5 transition">
+                        <svg id="icon-play" class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                        <svg id="icon-pause" class="w-4 h-4 hidden" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                        <span id="text-play">自动播放</span>
+                    </button>
+                    <button id="btn-next" disabled class="py-2 px-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:pointer-events-none text-slate-200 text-xs sm:text-sm font-medium border border-slate-700 flex items-center justify-center gap-1 transition">
+                        <span>下一步</span>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- 右侧：调色板、自定义公式、2D 展开图与求解按钮 (5列) -->
+        <section class="lg:col-span-5 flex flex-col gap-4">
+
+            <!-- 1. 调色板卡片 -->
+            <div class="bg-slate-900/80 border border-slate-800 rounded-2xl p-3.5 sm:p-4 shadow-xl">
+                <div class="flex items-center justify-between mb-2.5">
+                    <h2 class="font-semibold text-sm text-slate-100">1. 选择画笔颜色 (快捷键 1-6)</h2>
+                    <span id="selected-color-label" class="text-xs font-medium px-2 py-0.5 rounded bg-slate-800 text-sky-300 border border-slate-700">当前：白色 (U)</span>
+                </div>
+                <div id="palette-container" class="grid grid-cols-6 gap-2"></div>
+                <div class="mt-3 pt-2.5 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
+                    <span>色块计数 (每色需9块):</span>
+                    <div id="color-counts" class="flex items-center gap-1.5 font-mono"></div>
+                </div>
+            </div>
+
+            <!-- 2. 自定义公式执行卡片 -->
+            <div class="bg-slate-900/80 border border-slate-800 rounded-2xl p-3.5 sm:p-4 shadow-xl space-y-2">
+                <div class="flex items-center justify-between">
+                    <h2 class="font-semibold text-sm text-slate-100">自定义公式 / 打乱执行</h2>
+                    <span class="text-[11px] text-slate-400">支持 U D L R F B 及 ' / 2</span>
+                </div>
+                <div class="flex gap-2">
+                    <input id="custom-formula-input" type="text" placeholder="例如: R U R' U' F2 L D'" class="flex-1 min-w-0 bg-slate-950 border border-slate-700 focus:border-sky-500 focus:outline-none rounded-xl px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-100 placeholder-slate-500" />
+                    <button id="btn-apply-formula" class="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold shrink-0 transition">
+                        执行
+                    </button>
+                    <button id="btn-inverse-formula" class="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 shrink-0 transition" title="反向逆序执行公式">
+                        逆向
+                    </button>
+                </div>
+            </div>
+
+            <!-- 3. 2D 平面展开图与求解卡片 -->
+            <div class="flex-1 bg-slate-900/80 border border-slate-800 rounded-2xl p-3.5 sm:p-4 shadow-xl flex flex-col justify-between">
+                <div class="flex items-center justify-between mb-2">
+                    <h2 class="font-semibold text-sm text-slate-100">2. 录入六面颜色 (2D展开图)</h2>
+                    <span class="text-xs text-slate-400">中心块已锁定</span>
+                </div>
+
+                <!-- 十字形 2D 展开网 -->
+                <div class="my-auto py-2 flex items-center justify-center overflow-x-auto">
+                    <div id="net-2d" class="grid grid-cols-4 gap-1.5 sm:gap-2 select-none">
+                        <div></div>
+                        <div id="face-U"></div>
+                        <div></div>
+                        <div></div>
+
+                        <div id="face-L"></div>
+                        <div id="face-F"></div>
+                        <div id="face-R"></div>
+                        <div id="face-B"></div>
+
+                        <div></div>
+                        <div id="face-D"></div>
+                        <div></div>
+                        <div></div>
+                    </div>
+                </div>
+
+                <!-- 求解主按钮 -->
+                <div class="pt-3 border-t border-slate-800">
+                    <button id="btn-solve" class="w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-bold text-sm sm:text-base shadow-lg shadow-emerald-600/25 transition transform active:scale-[0.99] flex items-center justify-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        <span id="btn-solve-text">开始校验并求解魔方</span>
+                    </button>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- 拍照 / 上传照片识别模态框（双模式：实时摄像头 + 本地上传/直接拍照） -->
+    <div id="scanner-modal" class="fixed inset-0 z-50 hidden bg-slate-950/90 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl flex flex-col max-h-[92vh]">
+            <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-900 shrink-0">
+                <div class="flex items-center gap-2">
+                    <span class="w-2.5 h-2.5 rounded-full bg-sky-400"></span>
+                    <h3 class="font-bold text-sm sm:text-base text-white">魔方拍照 / 传图识别录入</h3>
+                </div>
+                <button id="btn-close-scanner" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+
+            <div class="p-4 space-y-3.5 overflow-y-auto">
+                <!-- 六面切换标签 -->
+                <div class="flex items-center justify-between gap-1 bg-slate-950 p-1.5 rounded-xl border border-slate-800" id="scanner-face-tabs"></div>
+
+                <!-- 朝向提示 -->
+                <div id="scanner-guide-text" class="text-xs text-sky-200 bg-sky-950/60 border border-sky-800/70 rounded-xl px-3 py-2"></div>
+
+                <!-- 模式切换 & 上传/拍照入口（解决 iframe 摄像头受限问题） -->
+                <div class="flex flex-wrap items-center gap-2">
+                    <label class="flex-1 min-w-[150px] cursor-pointer py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold text-center shadow transition flex items-center justify-center gap-1.5">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                        <span>拍照 / 选择魔方照片</span>
+                        <input id="photo-upload-input" type="file" accept="image/*" capture="environment" class="hidden" />
+                    </label>
+                    <button id="btn-retry-camera" type="button" class="py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 transition">
+                        切换实时摄像头
+                    </button>
+                </div>
+
+                <!-- 摄像头权限受限友好提示条 -->
+                <div id="camera-fallback-notice" class="hidden text-xs text-amber-200 bg-amber-950/70 border border-amber-700/70 rounded-xl px-3 py-2">
+                    当前浏览器预览窗口限制了直接调用实时摄像头，请直接点击上方<strong>“拍照 / 选择魔方照片”</strong>按钮（手机端可直接呼起相机拍照，电脑端可选择或粘贴图片），识别效果更清晰！
+                </div>
+
+                <!-- 取景 / 照片编辑画布容器 -->
+                <div id="scanner-viewport" class="relative aspect-square max-w-[280px] mx-auto rounded-2xl overflow-hidden bg-slate-950 border-2 border-slate-700 shadow-inner flex items-center justify-center">
+                    <video id="scanner-video" autoplay playsinline muted class="w-full h-full object-cover hidden"></video>
+                    <canvas id="scanner-photo-canvas" class="w-full h-full object-contain hidden"></canvas>
+                    <canvas id="scanner-work-canvas" class="hidden"></canvas>
+
+                    <!-- 空状态占位提示 -->
+                    <div id="scanner-empty-placeholder" class="p-5 text-center space-y-2">
+                        <div class="w-12 h-12 rounded-2xl bg-slate-800 mx-auto flex items-center justify-center text-sky-400">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                        </div>
+                        <div class="text-xs font-medium text-slate-200">点击上方“拍照 / 选择魔方照片”</div>
+                        <div class="text-[11px] text-slate-400">支持手机直接拍照、本地选图或 Ctrl+V 粘贴截图</div>
+                    </div>
+
+                    <!-- 可拖动调整的 3x3 采样框覆盖层 -->
+                    <div id="scanner-overlay-grid" class="absolute inset-6 grid grid-cols-3 grid-rows-3 gap-1.5 pointer-events-none"></div>
+                </div>
+
+                <!-- 识别结果预览与手动点选修正 -->
+                <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-3">
+                    <div>
+                        <div class="text-xs font-semibold text-slate-200">当前面识别结果（点击色块可切换颜色）</div>
+                        <div class="text-[11px] text-slate-400 mt-0.5">如果光线反光导致某格颜色不准，可直接点右侧色块修正</div>
+                    </div>
+                    <div id="scanner-preview-grid" class="grid grid-cols-3 gap-1 shrink-0"></div>
+                </div>
+
+                <!-- 底部确认按钮 -->
+                <div class="grid grid-cols-2 gap-2.5">
+                    <button id="btn-capture-face" type="button" class="py-2.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs sm:text-sm shadow transition">
+                        保存当前面并下一面
+                    </button>
+                    <button id="btn-finish-scan" type="button" class="py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs sm:text-sm shadow transition">
+                        完成扫描并导入
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        /**
+         * ============================================================================
+         * 1. 基础配色与魔方状态数据结构
+         * ============================================================================
+         */
+        const COLOR_SCHEMES = {
+            western: {
+                U: { code: 'U', name: '白色', hex: '#ffffff', border: '#cbd5e1', text: '#0f172a', faceName: '上 (U)' },
+                D: { code: 'D', name: '黄色', hex: '#facc15', border: '#ca8a04', text: '#0f172a', faceName: '下 (D)' },
+                F: { code: 'F', name: '绿色', hex: '#22c55e', border: '#15803d', text: '#ffffff', faceName: '前 (F)' },
+                B: { code: 'B', name: '蓝色', hex: '#3b82f6', border: '#1d4ed8', text: '#ffffff', faceName: '后 (B)' },
+                L: { code: 'L', name: '橙色', hex: '#f97316', border: '#c2410c', text: '#ffffff', faceName: '左 (L)' },
+                R: { code: 'R', name: '红色', hex: '#ef4444', border: '#b91c1c', text: '#ffffff', faceName: '右 (R)' },
+                X: { code: 'X', name: '未填色', hex: '#334155', border: '#475569', text: '#94a3b8', faceName: '空' }
+            },
+            japanese: {
+                U: { code: 'U', name: '白色', hex: '#ffffff', border: '#cbd5e1', text: '#0f172a', faceName: '上 (U)' },
+                D: { code: 'D', name: '蓝色', hex: '#3b82f6', border: '#1d4ed8', text: '#ffffff', faceName: '下 (D)' },
+                F: { code: 'F', name: '绿色', hex: '#22c55e', border: '#15803d', text: '#ffffff', faceName: '前 (F)' },
+                B: { code: 'B', name: '黄色', hex: '#facc15', border: '#ca8a04', text: '#0f172a', faceName: '后 (B)' },
+                L: { code: 'L', name: '橙色', hex: '#f97316', border: '#c2410c', text: '#ffffff', faceName: '左 (L)' },
+                R: { code: 'R', name: '红色', hex: '#ef4444', border: '#b91c1c', text: '#ffffff', faceName: '右 (R)' },
+                X: { code: 'X', name: '未填色', hex: '#334155', border: '#475569', text: '#94a3b8', faceName: '空' }
+            }
+        };
+
+        let currentScheme = 'western';
+        let COLORS = COLOR_SCHEMES[currentScheme];
+
+        // 54块贴纸索引顺序：U(0..8), R(9..17), F(18..26), D(27..35), L(36..44), B(45..53)
+        const FACE_ORDER = ['U', 'R', 'F', 'D', 'L', 'B'];
+        const SCAN_ORDER = ['U', 'F', 'R', 'B', 'L', 'D'];
+        const CENTER_INDICES = new Set([4, 13, 22, 31, 40, 49]);
+
+        let cubeState = new Array(54);
+        let initialSolvedStartState = null;
+        let selectedColor = 'U';
+
+        let solutionMoves = [];
+        let currentStepIndex = -1;
+        let isPlaying = false;
+        let isAnimating = false;
+        let playTimer = null;
+
+        /**
+         * ============================================================================
+         * 2. 魔方状态置换、完整合法性校验与两阶段 (Kociemba) 求解引擎
+         * ============================================================================
+         */
+        const U1=0, U2=1, U3=2, U4=3, U5=4, U6=5, U7=6, U8=7, U9=8;
+        const R1=9, R2=10, R3=11, R4=12, R5=13, R6=14, R7=15, R8=16, R9=17;
+        const F1=18, F2=19, F3=20, F4=21, F5=22, F6=23, F7=24, F8=25, F9=26;
+        const D1=27, D2=28, D3=29, D4=30, D5=31, D6=32, D7=33, D8=34, D9=35;
+        const L1=36, L2=37, L3=38, L4=39, L5=40, L6=41, L7=42, L8=43, L9=44;
+        const B1=45, B2=46, B3=47, B4=48, B5=49, B6=50, B7=51, B8=52, B9=53;
+
+        const CORNER_FACELETS = [
+            [U9, R1, F3], [U7, F1, L3], [U1, L1, B3], [U3, B1, R3],
+            [D3, F9, R7], [D1, L9, F7], [D7, B9, L7], [D9, R9, B7]
+        ];
+        const CORNER_COLORS = [
+            ['U', 'R', 'F'], ['U', 'F', 'L'], ['U', 'L', 'B'], ['U', 'B', 'R'],
+            ['D', 'F', 'R'], ['D', 'L', 'F'], ['D', 'B', 'L'], ['D', 'R', 'B']
+        ];
+        const EDGE_FACELETS = [
+            [U6, R2], [U8, F2], [U4, L2], [U2, B2],
+            [D6, R8], [D2, F8], [D4, L8], [D8, B8],
+            [F6, R4], [F4, L6], [B6, L4], [B4, R6]
+        ];
+        const EDGE_COLORS = [
+            ['U', 'R'], ['U', 'F'], ['U', 'L'], ['U', 'B'],
+            ['D', 'R'], ['D', 'F'], ['D', 'L'], ['D', 'B'],
+            ['F', 'R'], ['F', 'L'], ['B', 'L'], ['B', 'R']
+        ];
+
+        const MOVE_PERM = {
+            U: [
+                U7, U4, U1, U8, U5, U2, U9, U6, U3,
+                B1, B2, B3, R4, R5, R6, R7, R8, R9,
+                R1, R2, R3, F4, F5, F6, F7, F8, F9,
+                D1, D2, D3, D4, D5, D6, D7, D8, D9,
+                F1, F2, F3, L4, L5, L6, L7, L8, L9,
+                L1, L2, L3, B4, B5, B6, B7, B8, B9
+            ],
+            R: [
+                U1, U2, F3, U4, U5, F6, U7, U8, F9,
+                R7, R4, R1, R8, R5, R2, R9, R6, R3,
+                F1, F2, D3, F4, F5, D6, F7, F8, D9,
+                D1, D2, B7, D4, D5, B4, D7, D8, B1,
+                L1, L2, L3, L4, L5, L6, L7, L8, L9,
+                U9, B2, B3, U6, B5, B6, U3, B8, B9
+            ],
+            F: [
+                U1, U2, U3, U4, U5, U6, L9, L6, L3,
+                U7, R2, R3, U8, R5, R6, U9, R8, R9,
+                F7, F4, F1, F8, F5, F2, F9, F6, F3,
+                R7, R4, R1, D4, D5, D6, D7, D8, D9,
+                L1, L2, D1, L4, L5, D2, L7, L8, D3,
+                B1, B2, B3, B4, B5, B6, B7, B8, B9
+            ],
+            D: [
+                U1, U2, U3, U4, U5, U6, U7, U8, U9,
+                R1, R2, R3, R4, R5, R6, F7, F8, F9,
+                F1, F2, F3, F4, F5, F6, L7, L8, L9,
+                D7, D4, D1, D8, D5, D2, D9, D6, D3,
+                L1, L2, L3, L4, L5, L6, B7, B8, B9,
+                B1, B2, B3, B4, B5, B6, R7, R8, R9
+            ],
+            L: [
+                B9, U2, U3, B6, U5, U6, B3, U8, U9,
+                R1, R2, R3, R4, R5, R6, R7, R8, R9,
+                U1, F2, F3, U4, F5, F6, U7, F8, F9,
+                F1, D2, D3, F4, D5, D6, F7, D8, D9,
+                L7, L4, L1, L8, L5, L2, L9, L6, L3,
+                B1, B2, D7, B4, B5, D4, B7, B8, D1
+            ],
+            B: [
+                R3, R6, R9, U4, U5, U6, U7, U8, U9,
+                R1, R2, D9, R4, R5, D8, R7, R8, D7,
+                F1, F2, F3, F4, F5, F6, F7, F8, F9,
+                D1, D2, D3, D4, D5, D6, L1, L4, L7,
+                U3, L2, L3, U2, L5, L6, U1, L8, L9,
+                B7, B4, B1, B8, B5, B2, B9, B6, B3
+            ]
+        };
+
+        function applyMoveToState(state, move) {
+            const face = move[0];
+            const suffix = move.slice(1);
+            const times = suffix === '2' ? 2 : (suffix === "'" ? 3 : 1);
+            let cur = state.slice();
+            const perm = MOVE_PERM[face];
+            for (let t = 0; t < times; t++) {
+                const next = new Array(54);
+                for (let i = 0; i < 54; i++) next[i] = cur[perm[i]];
+                cur = next;
+            }
+            return cur;
+        }
+
+        function isStateSolved(state) {
+            for (let f = 0; f < 6; f++) {
+                const expected = FACE_ORDER[f];
+                for (let i = 0; i < 9; i++) {
+                    if (state[f * 9 + i] !== expected) return false;
+                }
+            }
+            return true;
+        }
+
+        function validateAndParseCube(state) {
+            const counts = { U: 0, D: 0, F: 0, B: 0, L: 0, R: 0, X: 0 };
+            for (let i = 0; i < 54; i++) counts[state[i]]++;
+
+            if (counts.X > 0) {
+                return { valid: false, title: "存在未填色的色块", desc: `还有 ${counts.X} 个色块未填入颜色，请先填满所有色块后再求解。` };
+            }
+            for (const c of FACE_ORDER) {
+                if (counts[c] !== 9) {
+                    const diff = counts[c] - 9;
+                    return {
+                        valid: false,
+                        title: `颜色数量错误：${COLORS[c].name}`,
+                        desc: `${COLORS[c].name}(${c}) 当前共有 ${counts[c]} 块，标准魔方每种颜色必须恰好为 9 块（${diff > 0 ? '多了 ' + diff + ' 块' : '少了 ' + (-diff) + ' 块'}）。`
+                    };
+                }
+            }
+
+            const centers = [4, 13, 22, 31, 40, 49];
+            for (let i = 0; i < 6; i++) {
+                if (state[centers[i]] !== FACE_ORDER[i]) {
+                    return { valid: false, title: "中心块颜色异常", desc: "请保持六个中心块与当前配色方案一致。" };
+                }
+            }
+
+            const cp = new Array(8).fill(-1);
+            const co = new Array(8).fill(0);
+            const usedCorners = new Array(8).fill(false);
+
+            for (let i = 0; i < 8; i++) {
+                const facelets = CORNER_FACELETS[i].map(idx => state[idx]);
+                let ori = -1;
+                for (let k = 0; k < 3; k++) {
+                    if (facelets[k] === 'U' || facelets[k] === 'D') {
+                        ori = k;
+                        break;
+                    }
+                }
+                if (ori === -1) {
+                    return {
+                        valid: false,
+                        title: `角块颜色组合非法`,
+                        desc: `发现了一个不含顶面(${COLORS.U.name})或底面(${COLORS.D.name})颜色的角块（${facelets.map(c => COLORS[c].name).join('、')}），请检查角块录入。`
+                    };
+                }
+                const c0 = facelets[ori];
+                const c1 = facelets[(ori + 1) % 3];
+                const c2 = facelets[(ori + 2) % 3];
+
+                let matchedCorner = -1;
+                for (let j = 0; j < 8; j++) {
+                    if (CORNER_COLORS[j][0] === c0 && CORNER_COLORS[j][1] === c1 && CORNER_COLORS[j][2] === c2) {
+                        matchedCorner = j;
+                        break;
+                    }
+                }
+                if (matchedCorner === -1) {
+                    return {
+                        valid: false,
+                        title: "角块颜色冲突或镜像错误",
+                        desc: `发现了非法角块（${facelets.map(c => COLORS[c].name).join('-')}），可能是相邻两色填反或贴纸贴错。`
+                    };
+                }
+                if (usedCorners[matchedCorner]) {
+                    return {
+                        valid: false,
+                        title: "存在重复的角块",
+                        desc: `角块（${CORNER_COLORS[matchedCorner].map(c => COLORS[c].name).join('-')}）重复出现，请核对周围角块。`
+                    };
+                }
+                usedCorners[matchedCorner] = true;
+                cp[i] = matchedCorner;
+                co[i] = ori;
+            }
+
+            if (co.reduce((a, b) => a + b, 0) % 3 !== 0) {
+                return {
+                    valid: false,
+                    title: "角块扭转错误 (色向不合法)",
+                    desc: "有一个角块被单独扭转了方向（常见于魔方散架装错或手指拨转单角），无法通过正常转动还原。"
+                };
+            }
+
+            const ep = new Array(12).fill(-1);
+            const eo = new Array(12).fill(0);
+            const usedEdges = new Array(12).fill(false);
+
+            for (let i = 0; i < 12; i++) {
+                const facelets = EDGE_FACELETS[i].map(idx => state[idx]);
+                let matchedEdge = -1;
+                let ori = 0;
+                for (let j = 0; j < 12; j++) {
+                    if (EDGE_COLORS[j][0] === facelets[0] && EDGE_COLORS[j][1] === facelets[1]) {
+                        matchedEdge = j; ori = 0; break;
+                    }
+                    if (EDGE_COLORS[j][0] === facelets[1] && EDGE_COLORS[j][1] === facelets[0]) {
+                        matchedEdge = j; ori = 1; break;
+                    }
+                }
+                if (matchedEdge === -1) {
+                    return {
+                        valid: false,
+                        title: "棱块颜色组合非法",
+                        desc: `存在相对面颜色组成的棱块（${facelets.map(c => COLORS[c].name).join('-')}），相对面的颜色不会出现在同一棱块上。`
+                    };
+                }
+                if (usedEdges[matchedEdge]) {
+                    return {
+                        valid: false,
+                        title: "存在重复的棱块",
+                        desc: `棱块（${EDGE_COLORS[matchedEdge].map(c => COLORS[c].name).join('-')}）重复出现，请检查棱块录入。`
+                    };
+                }
+                usedEdges[matchedEdge] = true;
+                ep[i] = matchedEdge;
+                eo[i] = ori;
+            }
+
+            if (eo.reduce((a, b) => a + b, 0) % 2 !== 0) {
+                return {
+                    valid: false,
+                    title: "棱块翻转错误 (色向奇偶性错误)",
+                    desc: "存在单个棱块被原地翻转（拆装错误），无法通过正常转动还原。"
+                };
+            }
+
+            let cornerParity = 0;
+            for (let i = 0; i < 8; i++) for (let j = i + 1; j < 8; j++) if (cp[i] > cp[j]) cornerParity++;
+            let edgeParity = 0;
+            for (let i = 0; i < 12; i++) for (let j = i + 1; j < 12; j++) if (ep[i] > ep[j]) edgeParity++;
+
+            if ((cornerParity + edgeParity) % 2 !== 0) {
+                return {
+                    valid: false,
+                    title: "排列奇偶性错误 (两块互换)",
+                    desc: "魔方中有两个角块或两个棱块位置互换了（常见于拆开重装），当前状态物理上不可还原。"
+                };
+            }
+
+            return { valid: true, cp, co, ep, eo };
+        }
+
+        // Kociemba 两阶段极速求解器
+        const KociembaSolver = (() => {
+            const ALL_MOVES = [
+                "U", "U2", "U'", "R", "R2", "R'", "F", "F2", "F'",
+                "D", "D2", "D'", "L", "L2", "L'", "B", "B2", "B'"
+            ];
+            const P2_MOVES = [0, 1, 2, 4, 7, 9, 10, 11, 13, 16];
+
+            const moveCP = new Array(18), moveCO = new Array(18);
+            const moveEP = new Array(18), moveEO = new Array(18);
+            let initialized = false;
+
+            const coDist = new Int8Array(2187).fill(-1);
+            const eoDist = new Int8Array(2048).fill(-1);
+            const sliceDist = new Int8Array(495).fill(-1);
+            const cpDist = new Int8Array(40320).fill(-1);
+            const udEpDist = new Int8Array(40320).fill(-1);
+            const sliceEpDist = new Int8Array(24).fill(-1);
+
+            function init() {
+                if (initialized) return;
+                const solved = new Array(54);
+                for (let f = 0; f < 6; f++) for (let i = 0; i < 9; i++) solved[f * 9 + i] = FACE_ORDER[f];
+
+                for (let m = 0; m < 18; m++) {
+                    const st = applyMoveToState(solved, ALL_MOVES[m]);
+                    const p = validateAndParseCube(st);
+                    moveCP[m] = p.cp; moveCO[m] = p.co;
+                    moveEP[m] = p.ep; moveEO[m] = p.eo;
+                }
+                buildTables();
+                initialized = true;
+            }
+
+            function encodeCO(co) {
+                let idx = 0;
+                for (let i = 0; i < 7; i++) idx = idx * 3 + co[i];
+                return idx;
+            }
+            function decodeCO(idx) {
+                const co = new Array(8); let sum = 0;
+                for (let i = 6; i >= 0; i--) { co[i] = idx % 3; sum += co[i]; idx = Math.floor(idx / 3); }
+                co[7] = (3 - (sum % 3)) % 3;
+                return co;
+            }
+            function encodeEO(eo) {
+                let idx = 0;
+                for (let i = 0; i < 11; i++) idx = (idx << 1) | eo[i];
+                return idx;
+            }
+            function decodeEO(idx) {
+                const eo = new Array(12); let sum = 0;
+                for (let i = 10; i >= 0; i--) { eo[i] = idx & 1; sum += eo[i]; idx >>= 1; }
+                eo[11] = sum & 1;
+                return eo;
+            }
+            function comb(n, k) {
+                if (n < k) return 0;
+                if (k === 0 || k === n) return 1;
+                let res = 1;
+                for (let i = 1; i <= k; i++) res = res * (n - i + 1) / i;
+                return res;
+            }
+            function encodeSlice(ep) {
+                let idx = 0, k = 3;
+                for (let i = 11; i >= 0; i--) {
+                    if (ep[i] >= 8) { idx += comb(i, k + 1); k--; }
+                }
+                return idx;
+            }
+            function decodeSlice(idx) {
+                const ep = new Array(12).fill(0); let k = 3, edgeVal = 8;
+                for (let i = 11; i >= 0; i--) {
+                    const c = comb(i, k + 1);
+                    if (idx >= c && k >= 0) { ep[i] = edgeVal++; idx -= c; k--; }
+                }
+                return ep;
+            }
+            const FACT = [1, 1, 2, 6, 24, 120, 720, 5040];
+            function encodePerm8(arr) {
+                let idx = 0;
+                for (let i = 0; i < 8; i++) {
+                    let s = 0;
+                    for (let j = i + 1; j < 8; j++) if (arr[j] < arr[i]) s++;
+                    idx += s * FACT[7 - i];
+                }
+                return idx;
+            }
+            function decodePerm8(idx) {
+                const elems = [0, 1, 2, 3, 4, 5, 6, 7], res = new Array(8);
+                for (let i = 0; i < 8; i++) {
+                    const q = Math.floor(idx / FACT[7 - i]);
+                    idx %= FACT[7 - i];
+                    res[i] = elems.splice(q, 1)[0];
+                }
+                return res;
+            }
+            function encodePerm4(arr) {
+                let idx = 0; const f = [1, 1, 2, 6];
+                for (let i = 0; i < 4; i++) {
+                    let s = 0;
+                    for (let j = i + 1; j < 4; j++) if (arr[j] < arr[i]) s++;
+                    idx += s * f[3 - i];
+                }
+                return idx;
+            }
+            function decodePerm4(idx) {
+                const elems = [0, 1, 2, 3], f = [1, 1, 2, 6], res = new Array(4);
+                for (let i = 0; i < 4; i++) {
+                    const q = Math.floor(idx / f[3 - i]);
+                    idx %= f[3 - i];
+                    res[i] = elems.splice(q, 1)[0];
+                }
+                return res;
+            }
+
+            function mulCO(co, m) {
+                const r = new Array(8), mcp = moveCP[m], mco = moveCO[m];
+                for (let i = 0; i < 8; i++) r[i] = (co[mcp[i]] + mco[i]) % 3;
+                return r;
+            }
+            function mulEO(eo, m) {
+                const r = new Array(12), mep = moveEP[m], meo = moveEO[m];
+                for (let i = 0; i < 12; i++) r[i] = (eo[mep[i]] + meo[i]) % 2;
+                return r;
+            }
+            function mulEP(ep, m) {
+                const r = new Array(12), mep = moveEP[m];
+                for (let i = 0; i < 12; i++) r[i] = ep[mep[i]];
+                return r;
+            }
+            function mulCP(cp, m) {
+                const r = new Array(8), mcp = moveCP[m];
+                for (let i = 0; i < 8; i++) r[i] = cp[mcp[i]];
+                return r;
+            }
+
+            function buildTables() {
+                coDist[0] = 0; let q = [0];
+                while (q.length) {
+                    const cur = q.shift(), d = coDist[cur], co = decodeCO(cur);
+                    for (let m = 0; m < 18; m++) {
+                        const nxt = encodeCO(mulCO(co, m));
+                        if (coDist[nxt] === -1) { coDist[nxt] = d + 1; q.push(nxt); }
+                    }
+                }
+                eoDist[0] = 0; q = [0];
+                while (q.length) {
+                    const cur = q.shift(), d = eoDist[cur], eo = decodeEO(cur);
+                    for (let m = 0; m < 18; m++) {
+                        const nxt = encodeEO(mulEO(eo, m));
+                        if (eoDist[nxt] === -1) { eoDist[nxt] = d + 1; q.push(nxt); }
+                    }
+                }
+                const solvedSlice = encodeSlice([0,1,2,3,4,5,6,7,8,9,10,11]);
+                sliceDist[solvedSlice] = 0; q = [solvedSlice];
+                while (q.length) {
+                    const cur = q.shift(), d = sliceDist[cur], ep = decodeSlice(cur);
+                    for (let m = 0; m < 18; m++) {
+                        const nxt = encodeSlice(mulEP(ep, m));
+                        if (sliceDist[nxt] === -1) { sliceDist[nxt] = d + 1; q.push(nxt); }
+                    }
+                }
+                cpDist[0] = 0; q = [0];
+                while (q.length) {
+                    const cur = q.shift(), d = cpDist[cur], cp = decodePerm8(cur);
+                    for (const m of P2_MOVES) {
+                        const nxt = encodePerm8(mulCP(cp, m));
+                        if (cpDist[nxt] === -1) { cpDist[nxt] = d + 1; q.push(nxt); }
+                    }
+                }
+                udEpDist[0] = 0; q = [0];
+                while (q.length) {
+                    const cur = q.shift(), d = udEpDist[cur], ep8 = decodePerm8(cur);
+                    const full = [...ep8, 8, 9, 10, 11];
+                    for (const m of P2_MOVES) {
+                        const nxt = encodePerm8(mulEP(full, m).slice(0, 8));
+                        if (udEpDist[nxt] === -1) { udEpDist[nxt] = d + 1; q.push(nxt); }
+                    }
+                }
+                sliceEpDist[0] = 0; q = [0];
+                while (q.length) {
+                    const cur = q.shift(), d = sliceEpDist[cur], ep4 = decodePerm4(cur).map(x => x + 8);
+                    const full = [0,1,2,3,4,5,6,7, ...ep4];
+                    for (const m of P2_MOVES) {
+                        const nxt = encodePerm4(mulEP(full, m).slice(8, 12).map(x => x - 8));
+                        if (sliceEpDist[nxt] === -1) { sliceEpDist[nxt] = d + 1; q.push(nxt); }
+                    }
+                }
+            }
+
+            function simplifyMoves(moves) {
+                const stack = [];
+                for (const mv of moves) {
+                    const face = mv[0];
+                    const power = mv.length === 1 ? 1 : (mv[1] === '2' ? 2 : 3);
+                    if (stack.length > 0 && stack[stack.length - 1].face === face) {
+                        const combP = (stack[stack.length - 1].power + power) % 4;
+                        if (combP === 0) stack.pop();
+                        else stack[stack.length - 1].power = combP;
+                    } else {
+                        stack.push({ face, power });
+                    }
+                }
+                return stack.map(it => it.face + (it.power === 1 ? '' : (it.power === 2 ? '2' : "'")));
+            }
+
+            function solve(parsed, rawState) {
+                init();
+                if (isStateSolved(rawState)) return [];
+
+                let bestSolution = null;
+                const startTime = performance.now();
+
+                function searchP1(cp, co, ep, eo, depth, maxDepth, lastFace, path) {
+                    const h = Math.max(coDist[encodeCO(co)], eoDist[encodeEO(eo)], sliceDist[encodeSlice(ep)]);
+                    if (h > maxDepth - depth) return false;
+                    if (depth === maxDepth) {
+                        if (h === 0) {
+                            const p2 = solvePhase2(cp, ep, 22 - depth);
+                            if (p2 !== null) {
+                                bestSolution = [...path, ...p2];
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                    for (let m = 0; m < 18; m++) {
+                        const face = Math.floor(m / 3);
+                        if (face === lastFace) continue;
+                        if (lastFace !== -1 && (face % 3 === lastFace % 3) && face < lastFace) continue;
+                        path.push(m);
+                        if (searchP1(mulCP(cp, m), mulCO(co, m), mulEP(ep, m), mulEO(eo, m), depth + 1, maxDepth, face, path)) return true;
+                        path.pop();
+                        if (performance.now() - startTime > 3500 && bestSolution) return true;
+                    }
+                    return false;
+                }
+
+                function solvePhase2(cp, ep, maxAllowed) {
+                    const startH = Math.max(
+                        cpDist[encodePerm8(cp)],
+                        udEpDist[encodePerm8(ep.slice(0, 8))],
+                        sliceEpDist[encodePerm4(ep.slice(8, 12).map(x => x - 8))]
+                    );
+                    for (let maxD = startH; maxD <= Math.min(18, maxAllowed); maxD++) {
+                        const path = [];
+                        if (searchP2(cp, ep, 0, maxD, -1, path)) return path;
+                    }
+                    return null;
+                }
+
+                function searchP2(cp, ep, depth, maxDepth, lastFace, path) {
+                    const h = Math.max(
+                        cpDist[encodePerm8(cp)],
+                        udEpDist[encodePerm8(ep.slice(0, 8))],
+                        sliceEpDist[encodePerm4(ep.slice(8, 12).map(x => x - 8))]
+                    );
+                    if (h > maxDepth - depth) return false;
+                    if (depth === maxDepth) return h === 0;
+                    for (const m of P2_MOVES) {
+                        const face = Math.floor(m / 3);
+                        if (face === lastFace) continue;
+                        if (lastFace !== -1 && (face % 3 === lastFace % 3) && face < lastFace) continue;
+                        path.push(m);
+                        if (searchP2(mulCP(cp, m), mulEP(ep, m), depth + 1, maxDepth, face, path)) return true;
+                        path.pop();
+                    }
+                    return false;
+                }
+
+                const startH1 = Math.max(
+                    coDist[encodeCO(parsed.co)],
+                    eoDist[encodeEO(parsed.eo)],
+                    sliceDist[encodeSlice(parsed.ep)]
+                );
+
+                for (let d = startH1; d <= 14; d++) {
+                    if (searchP1(parsed.cp, parsed.co, parsed.ep, parsed.eo, 0, d, -1, [])) break;
+                }
+
+                if (!bestSolution) return null;
+                const finalMoves = simplifyMoves(bestSolution.map(m => ALL_MOVES[m]));
+
+                // 验证求解结果是否能100%还原原始魔方状态
+                let verifyState = rawState.slice();
+                for (const mv of finalMoves) verifyState = applyMoveToState(verifyState, mv);
+                if (!isStateSolved(verifyState)) return null;
+
+                return finalMoves;
+            }
+
+            return { solve };
+        })();
+
+        /**
+         * ============================================================================
+         * 3. 零外部依赖 CSS3 3D 魔方引擎（26 个外层小方块，真实 3D 空间旋转动画）
+         * ============================================================================
+         */
+        let camRotX = -26;
+        let camRotY = -36;
+        let cubieElements = []; // { el, x, y, z }
+        let highlightedFace = null;
+
+        // 映射 3D 坐标 (x,y,z) 与朝向到 stateIndex (0..53)
+        function getStickerStateIndex(x, y, z, face) {
+            if (face === 'U' && y === -1) return 0 + (z + 1) * 3 + (x + 1);
+            if (face === 'D' && y === 1)  return 27 + (1 - z) * 3 + (x + 1);
+            if (face === 'F' && z === 1)  return 18 + (y + 1) * 3 + (x + 1);
+            if (face === 'B' && z === -1) return 45 + (y + 1) * 3 + (1 - x);
+            if (face === 'R' && x === 1)  return 9 + (y + 1) * 3 + (1 - z);
+            if (face === 'L' && x === -1) return 36 + (y + 1) * 3 + (z + 1);
+            return -1;
+        }
+
+        function updateWorldTransform() {
+            const world = document.getElementById('cube-world');
+            if (world) {
+                world.style.transform = `rotateX(${camRotX}deg) rotateY(${camRotY}deg)`;
+            }
+        }
+
+        // 重建 3D 魔方 DOM（注意 CSS 3D 坐标系：+X 右, +Y 下, +Z 朝向屏幕外）
+        function build3DCube() {
+            const world = document.getElementById('cube-world');
+            world.innerHTML = '';
+            cubieElements = [];
+
+            const faces = ['U', 'D', 'F', 'B', 'R', 'L'];
+
+            for (let x = -1; x <= 1; x++) {
+                for (let y = -1; y <= 1; y++) {
+                    for (let z = -1; z <= 1; z++) {
+                        if (x === 0 && y === 0 && z === 0) continue;
+
+                        const cubie = document.createElement('div');
+                        cubie.className = 'cubie';
+                        cubie.style.transform = `translate3d(calc(${x} * var(--step)), calc(${y} * var(--step)), calc(${z} * var(--step)))`;
+
+                        for (const f of faces) {
+                            const faceDiv = document.createElement('div');
+                            faceDiv.className = `cubie-face face-${f}`;
+
+                            const idx = getStickerStateIndex(x, y, z, f);
+                            if (idx !== -1) {
+                                const code = cubeState[idx];
+                                const c = COLORS[code];
+                                const sticker = document.createElement('div');
+                                const isCenter = CENTER_INDICES.has(idx);
+                                sticker.className = `sticker-3d ${isCenter ? '' : 'paintable'}`;
+                                sticker.dataset.stateIndex = idx;
+                                sticker.style.backgroundColor = c.hex;
+                                sticker.style.color = c.text;
+                                if (isCenter) {
+                                    sticker.textContent = f;
+                                }
+                                if (highlightedFace && isCubieInFace(x, y, z, highlightedFace)) {
+                                    sticker.classList.add('layer-highlight');
+                                }
+                                faceDiv.appendChild(sticker);
+                            }
+                            cubie.appendChild(faceDiv);
+                        }
+
+                        world.appendChild(cubie);
+                        cubieElements.push({ el: cubie, x, y, z });
+                    }
+                }
+            }
+            updateWorldTransform();
+        }
+
+        function isCubieInFace(x, y, z, face) {
+            if (face === 'U') return y === -1;
+            if (face === 'D') return y === 1;
+            if (face === 'R') return x === 1;
+            if (face === 'L') return x === -1;
+            if (face === 'F') return z === 1;
+            if (face === 'B') return z === -1;
+            return false;
+        }
+
+        function setHighlightedLayer(move) {
+            highlightedFace = move ? move[0] : null;
+            updateDirectionHUD(move);
+            build3DCube();
+        }
+
+        // 更新右上角旋转方向 SVG 箭头提示卡
+        function updateDirectionHUD(move) {
+            const card = document.getElementById('hud-direction-card');
+            if (!move) {
+                card.classList.add('hidden');
+                return;
+            }
+            card.classList.remove('hidden');
+            const info = getMoveDescription(move);
+            document.getElementById('hud-move-label').textContent = move;
+            document.getElementById('hud-move-hint').textContent = info.title;
+
+            const isPrime = move.endsWith("'");
+            const svgHolder = document.getElementById('hud-arrow-svg');
+            if (!isPrime) {
+                // 顺时针箭头
+                svgHolder.innerHTML = `<svg class="w-5 h-5 text-sky-300" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-3-6.7L21 8"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 3v5h-5"/></svg>`;
+            } else {
+                // 逆时针箭头
+                svgHolder.innerHTML = `<svg class="w-5 h-5 text-amber-300" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 12a9 9 0 103-6.7L3 8"/><path stroke-linecap="round" stroke-linejoin="round" d="M3 3v5h5"/></svg>`;
+            }
+        }
+
+        // 执行真实 3D 层旋转动画（将目标层 9 个小方块挂载至 pivot 节点进行 CSS3 rotateX/Y/Z 过渡）
+        function animateMove3D(move, durationMs, callback) {
+            if (isAnimating) return;
+            isAnimating = true;
+            updateDirectionHUD(move);
+
+            const face = move[0];
+            const suffix = move.slice(1);
+            const mult = suffix === '2' ? 2 : (suffix === "'" ? -1 : 1);
+
+            // CSS3 坐标轴方向：X 向右，Y 向下，Z 朝向屏幕外
+            let axis = 'Y', deg = 0;
+            if (face === 'U') { axis = 'Y'; deg = -90 * mult; }
+            if (face === 'D') { axis = 'Y'; deg = 90 * mult; }
+            if (face === 'R') { axis = 'X'; deg = 90 * mult; }
+            if (face === 'L') { axis = 'X'; deg = -90 * mult; }
+            if (face === 'F') { axis = 'Z'; deg = 90 * mult; }
+            if (face === 'B') { axis = 'Z'; deg = -90 * mult; }
+
+            const world = document.getElementById('cube-world');
+            const pivot = document.createElement('div');
+            pivot.className = 'layer-pivot';
+            pivot.style.transition = `transform ${durationMs}ms cubic-bezier(0.22, 1, 0.36, 1)`;
+            world.appendChild(pivot);
+
+            const movingCubies = cubieElements.filter(c => isCubieInFace(c.x, c.y, c.z, face));
+            for (const c of movingCubies) {
+                pivot.appendChild(c.el);
+            }
+
+            // 强制重排以触发 CSS 过渡动画
+            void pivot.offsetWidth;
+            pivot.style.transform = `rotate${axis}(${deg}deg)`;
+
+            setTimeout(() => {
+                cubeState = applyMoveToState(cubeState, move);
+                isAnimating = false;
+                if (solutionMoves.length > 0 && currentStepIndex + 2 < solutionMoves.length) {
+                    highlightedFace = solutionMoves[currentStepIndex + 2][0];
+                    updateDirectionHUD(solutionMoves[currentStepIndex + 2]);
+                } else {
+                    highlightedFace = null;
+                    updateDirectionHUD(null);
+                }
+                build3DCube();
+                render2DNet();
+                if (callback) callback();
+            }, durationMs + 15);
+        }
+
+        // 绑定 3D 舞台的拖拽旋转视角与点击填色（< 6px 严格区分拖拽和点击）
+        function init3DStageInteraction() {
+            const stage = document.getElementById('cube-stage');
+            let dragging = false;
+            let startX = 0, startY = 0;
+            let lastX = 0, lastY = 0;
+
+            const handleStart = (x, y) => {
+                dragging = true;
+                startX = lastX = x;
+                startY = lastY = y;
+            };
+
+            const handleMove = (x, y) => {
+                if (!dragging) return;
+                const dx = x - lastX;
+                const dy = y - lastY;
+                camRotY += dx * 0.55;
+                camRotX = Math.max(-85, Math.min(85, camRotX - dy * 0.55));
+                updateWorldTransform();
+                lastX = x;
+                lastY = y;
+            };
+
+            const handleEnd = (x, y, targetEl) => {
+                if (!dragging) return;
+                dragging = false;
+                const dist = Math.hypot(x - startX, y - startY);
+                if (dist < 6 && !isAnimating) {
+                    const sticker = targetEl ? targetEl.closest('.sticker-3d') : null;
+                    if (sticker && sticker.dataset.stateIndex !== undefined) {
+                        paintSticker(parseInt(sticker.dataset.stateIndex, 10));
+                    }
+                }
+            };
+
+            stage.addEventListener('mousedown', e => handleStart(e.clientX, e.clientY));
+            window.addEventListener('mousemove', e => handleMove(e.clientX, e.clientY));
+            window.addEventListener('mouseup', e => handleEnd(e.clientX, e.clientY, e.target));
+
+            stage.addEventListener('touchstart', e => {
+                if (e.touches.length === 1) {
+                    handleStart(e.touches[0].clientX, e.touches[0].clientY);
+                }
+            }, { passive: true });
+
+            stage.addEventListener('touchmove', e => {
+                if (e.touches.length === 1 && dragging) {
+                    e.preventDefault();
+                    handleMove(e.touches[0].clientX, e.touches[0].clientY);
+                }
+            }, { passive: false });
+
+            stage.addEventListener('touchend', e => {
+                if (e.changedTouches.length === 1) {
+                    const t = e.changedTouches[0];
+                    const el = document.elementFromPoint(t.clientX, t.clientY);
+                    handleEnd(t.clientX, t.clientY, el);
+                }
+            });
+        }
+
+        /**
+         * ============================================================================
+         * 4. 2D 平面展开图、调色板与颜色统计同步
+         * ============================================================================
+         */
+        function initPalette() {
+            const container = document.getElementById('palette-container');
+            container.innerHTML = '';
+
+            FACE_ORDER.forEach((code, idx) => {
+                const c = COLORS[code];
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.dataset.color = code;
+                btn.className = `palette-btn h-11 rounded-xl border-2 flex flex-col items-center justify-center font-bold text-xs transition ${code === selectedColor ? 'active' : ''}`;
+                btn.style.backgroundColor = c.hex;
+                btn.style.borderColor = c.border;
+                btn.style.color = c.text;
+                btn.innerHTML = `<span>${c.name[0]}</span><span class="text-[9px] opacity-75">${idx + 1}</span>`;
+                btn.title = `${c.name} (${c.faceName}) [快捷键 ${idx + 1}]`;
+
+                btn.addEventListener('click', () => {
+                    selectedColor = code;
+                    document.querySelectorAll('.palette-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    document.getElementById('selected-color-label').textContent = `当前：${c.name} (${code})`;
+                });
+                container.appendChild(btn);
+            });
+        }
+
+        function render2DNet() {
+            const offsets = { U: 0, R: 9, F: 18, D: 27, L: 36, B: 45 };
+
+            for (const face of ['U', 'L', 'F', 'R', 'B', 'D']) {
+                const grid = document.getElementById(`face-${face}`);
+                grid.className = 'grid grid-cols-3 gap-1 p-1 bg-slate-950 rounded-xl border border-slate-800';
+                grid.innerHTML = '';
+
+                const base = offsets[face];
+                for (let i = 0; i < 9; i++) {
+                    const idx = base + i;
+                    const colorCode = cubeState[idx];
+                    const c = COLORS[colorCode];
+                    const isCenter = (i === 4);
+
+                    const cell = document.createElement('button');
+                    cell.type = 'button';
+                    cell.className = `sticker-2d w-7 h-7 sm:w-8 sm:h-8 rounded-md flex items-center justify-center text-[11px] font-bold border ${isCenter ? 'is-center cursor-not-allowed' : 'cursor-pointer'}`;
+                    cell.style.backgroundColor = c.hex;
+                    cell.style.borderColor = c.border;
+                    cell.style.color = c.text;
+
+                    if (isCenter) {
+                        cell.textContent = face;
+                        cell.title = `${c.faceName} 中心块（固定）`;
+                    } else {
+                        cell.addEventListener('click', () => paintSticker(idx));
+                    }
+                    grid.appendChild(cell);
+                }
+            }
+            updateColorCounts();
+        }
+
+        function paintSticker(stateIndex) {
+            if (isAnimating || isPlaying) return;
+            if (CENTER_INDICES.has(stateIndex)) {
+                showMessage('info', '中心块已固定', '三阶魔方中心块相对位置固定，只需录入其余 48 个外围色块。');
+                return;
+            }
+            cubeState[stateIndex] = selectedColor;
+            if (solutionMoves.length > 0) resetSolutionUI();
+            render2DNet();
+            build3DCube();
+        }
+
+        function updateColorCounts() {
+            const counts = { U: 0, R: 0, F: 0, D: 0, L: 0, R_CNT: 0, B: 0 };
+            for (let i = 0; i < 54; i++) {
+                if (counts[cubeState[i]] !== undefined) counts[cubeState[i]]++;
+            }
+            const holder = document.getElementById('color-counts');
+            holder.innerHTML = FACE_ORDER.map(code => {
+                const cnt = counts[code];
+                const ok = cnt === 9;
+                return `<span class="px-1.5 py-0.5 rounded text-[11px] border ${ok ? 'bg-slate-800/80 border-slate-700 text-slate-300' : 'bg-rose-950 border-rose-700 text-rose-300 font-bold'}" title="${COLORS[code].name}: ${cnt}/9">
+                    <span class="inline-block w-2 h-2 rounded-full mr-0.5" style="background:${COLORS[code].hex}"></span>${cnt}
+                </span>`;
+            }).join('');
+        }
+
+        /**
+         * ============================================================================
+         * 5. 快捷功能（打乱、重置、清空、预设、自定义公式、配色切换）
+         * ============================================================================
+         */
+        function getMoveDescription(mv) {
+            const face = mv[0];
+            const suffix = mv.slice(1);
+            const cName = COLORS[face].name;
+            const faceLabel = { U: '顶层', D: '底层', R: '右侧', L: '左侧', F: '前面', B: '背面' }[face];
+            if (suffix === '2') {
+                return {
+                    title: `${faceLabel}旋转 180° (${mv})`,
+                    sub: `正对${cName}中心面旋转半圈`
+                };
+            }
+            const isPrime = suffix === "'";
+            return {
+                title: `${faceLabel}${isPrime ? '逆时针' : '顺时针'}转 90° (${mv})`,
+                sub: `正对${cName}中心面，${isPrime ? '逆时针' : '顺时针'}旋转 90°`
+            };
+        }
+
+        function resetToSolved() {
+            stopAutoPlay();
+            if (isAnimating) return;
+            for (let f = 0; f < 6; f++) {
+                for (let i = 0; i < 9; i++) cubeState[f * 9 + i] = FACE_ORDER[f];
+            }
+            resetSolutionUI();
+            render2DNet();
+            build3DCube();
+            hideMessage();
+        }
+
+        function clearColors() {
+            stopAutoPlay();
+            if (isAnimating) return;
+            for (let f = 0; f < 6; f++) {
+                for (let i = 0; i < 9; i++) cubeState[f * 9 + i] = (i === 4) ? FACE_ORDER[f] : 'X';
+            }
+            resetSolutionUI();
+            render2DNet();
+            build3DCube();
+            showMessage('info', '已清空非中心色块', '请选择上方画笔颜色，点击 3D 魔方或 2D 展开图录入颜色。');
+        }
+
+        function scrambleCube() {
+            stopAutoPlay();
+            if (isAnimating) return;
+            resetToSolved();
+            const faces = ['U', 'D', 'L', 'R', 'F', 'B'];
+            const suffixes = ['', "'", '2'];
+            let lastFace = '';
+            const seq = [];
+            for (let i = 0; i < 20; i++) {
+                let f;
+                do { f = faces[Math.floor(Math.random() * 6)]; } while (f === lastFace);
+                lastFace = f;
+                const mv = f + suffixes[Math.floor(Math.random() * 3)];
+                seq.push(mv);
+                cubeState = applyMoveToState(cubeState, mv);
+            }
+            document.getElementById('custom-formula-input').value = seq.join(' ');
+            render2DNet();
+            build3DCube();
+            showMessage('success', '已完成 20 步随机打乱', `打乱公式：${seq.join(' ')}`);
+        }
+
+        function applyPresetPattern(val) {
+            if (!val || isAnimating) return;
+            stopAutoPlay();
+            if (val === 'solved') resetToSolved();
+            else if (val === 'scramble') scrambleCube();
+            else if (val === 'checkerboard') {
+                resetToSolved();
+                for (const mv of ['U2', 'D2', 'R2', 'L2', 'F2', 'B2']) cubeState = applyMoveToState(cubeState, mv);
+                render2DNet(); build3DCube();
+                showMessage('success', '已生成“棋盘格”图案', '公式：U2 D2 R2 L2 F2 B2，点击求解按钮即可一键还原。');
+            } else if (val === 'dot') {
+                resetToSolved();
+                for (const mv of ['U', "D'", 'R', "L'", 'F', "B'", 'U', "D'"]) cubeState = applyMoveToState(cubeState, mv);
+                render2DNet(); build3DCube();
+                showMessage('success', '已生成“中心点替换”图案', '公式：U D\' R L\' F B\' U D\'，点击求解按钮即可一键还原。');
+            }
+            document.getElementById('preset-select').value = '';
+        }
+
+        function switchColorScheme(schemeKey) {
+            currentScheme = schemeKey;
+            COLORS = COLOR_SCHEMES[schemeKey];
+            initPalette();
+            render2DNet();
+            build3DCube();
+
+            document.getElementById('orientation-legend').innerHTML = `
+                <div><span class="text-white font-bold">U(上)</span>: ${COLORS.U.name[0]} &nbsp;|&nbsp; <span class="${schemeKey === 'western' ? 'text-yellow-400' : 'text-blue-400'} font-bold">D(下)</span>: ${COLORS.D.name[0]}</div>
+                <div><span class="text-emerald-400 font-bold">F(前)</span>: ${COLORS.F.name[0]} &nbsp;|&nbsp; <span class="${schemeKey === 'western' ? 'text-blue-400' : 'text-yellow-400'} font-bold">B(后)</span>: ${COLORS.B.name[0]}</div>
+                <div><span class="text-orange-400 font-bold">L(左)</span>: ${COLORS.L.name[0]} &nbsp;|&nbsp; <span class="text-red-400 font-bold">R(右)</span>: ${COLORS.R.name[0]}</div>
+            `;
+            document.getElementById('selected-color-label').textContent = `当前：${COLORS[selectedColor].name} (${selectedColor})`;
+            if (solutionMoves.length > 0) updateStepHighlight();
+        }
+
+        function getInverseMove(mv) {
+            if (mv.endsWith("'")) return mv[0];
+            if (mv.endsWith("2")) return mv;
+            return mv + "'";
+        }
+
+        function executeCustomFormula(inverse = false) {
+            if (isAnimating || isPlaying) return;
+            const raw = document.getElementById('custom-formula-input').value.trim().toUpperCase().replace(/[’‘`]/g, "'");
+            if (!raw) {
+                showMessage('error', '请输入公式', '支持标准转动字母 U, D, L, R, F, B 以及 \' 和 2，例如 R U R\' U\'。');
+                return;
+            }
+            const tokens = raw.match(/[UDLRFB][2']?/g);
+            if (!tokens || tokens.join('') !== raw.replace(/\s+/g, '')) {
+                showMessage('error', '公式格式无效', '仅允许包含 U, D, L, R, F, B 以及 \' 和 2。');
+                return;
+            }
+            let seq = inverse ? tokens.slice().reverse().map(getInverseMove) : tokens;
+            if (cubeState.includes('X')) resetToSolved();
+            else resetSolutionUI();
+
+            for (const mv of seq) cubeState = applyMoveToState(cubeState, mv);
+            render2DNet();
+            build3DCube();
+            showMessage('success', inverse ? '已执行逆向公式' : '已执行自定义公式', `执行序列 (${seq.length} 步)：${seq.join(' ')}`);
+        }
+
+        function manualMove(mv) {
+            if (isAnimating || isPlaying) return;
+            if (solutionMoves.length > 0) resetSolutionUI();
+            const speed = Math.min(parseInt(document.getElementById('speed-select').value, 10), 220);
+            animateMove3D(mv, speed);
+        }
+
+        /**
+         * ============================================================================
+         * 6. 求解控制与步骤播放器
+         * ============================================================================
+         */
+        function handleSolve() {
+            stopAutoPlay();
+            if (isAnimating) return;
+
+            const validation = validateAndParseCube(cubeState);
+            if (!validation.valid) {
+                showMessage('error', validation.title, validation.desc);
+                return;
+            }
+
+            const btnText = document.getElementById('btn-solve-text');
+            btnText.textContent = '正在计算最优还原公式...';
+
+            setTimeout(() => {
+                try {
+                    const moves = KociembaSolver.solve(validation, cubeState);
+                    btnText.textContent = '开始校验并求解魔方';
+
+                    if (moves === null) {
+                        showMessage('error', '求解失败', '未能找到有效路径，请核对六面色块是否录入正确。');
+                        return;
+                    }
+                    if (moves.length === 0) {
+                        resetSolutionUI();
+                        showMessage('success', '魔方已经处于还原状态！', '六个面均已归位，无需任何操作。');
+                        return;
+                    }
+
+                    initialSolvedStartState = cubeState.slice();
+                    solutionMoves = moves;
+                    currentStepIndex = -1;
+                    renderSolutionMoves();
+                    updatePlaybackControls();
+                    setHighlightedLayer(solutionMoves[0]);
+                    showMessage('success', `求解成功！共需 ${moves.length} 步还原`, '点击下方“自动播放”、“下一步”或直接点击步骤标签跳转演示。');
+                } catch (err) {
+                    btnText.textContent = '开始校验并求解魔方';
+                    showMessage('error', '求解异常', err.message || '请检查魔方状态。');
+                }
+            }, 30);
+        }
+
+        function resetSolutionUI() {
+            stopAutoPlay();
+            highlightedFace = null;
+            updateDirectionHUD(null);
+            solutionMoves = [];
+            initialSolvedStartState = null;
+            currentStepIndex = -1;
+            document.getElementById('step-counter').textContent = '未求解';
+            document.getElementById('current-move-badge').textContent = '-';
+            document.getElementById('current-move-title').textContent = '请先录入魔方颜色，再点击“开始校验并求解魔方”';
+            document.getElementById('current-move-sub').textContent = '支持键盘 ←/→ 单步切换、Space 自动播放';
+            document.getElementById('moves-container').innerHTML = '<span class="text-xs text-slate-500">求解后将在此显示标准还原公式，点击任意步骤可直接跳转...</span>';
+            updatePlaybackControls();
+        }
+
+        function renderSolutionMoves() {
+            const container = document.getElementById('moves-container');
+            container.innerHTML = '';
+            solutionMoves.forEach((mv, idx) => {
+                const chip = document.createElement('button');
+                chip.type = 'button';
+                chip.id = `move-chip-${idx}`;
+                chip.className = 'move-chip px-2.5 py-1 rounded-lg font-mono font-bold text-xs border border-slate-700 bg-slate-800 text-slate-200 cursor-pointer hover:border-sky-400';
+                chip.textContent = mv;
+                chip.title = `跳转至第 ${idx + 1} 步执行后的状态`;
+                chip.addEventListener('click', () => jumpToStep(idx));
+                container.appendChild(chip);
+            });
+            updateStepHighlight();
+        }
+
+        function jumpToStep(targetIdx) {
+            if (isAnimating || !initialSolvedStartState) return;
+            stopAutoPlay();
+            let st = initialSolvedStartState.slice();
+            for (let i = 0; i <= targetIdx; i++) st = applyMoveToState(st, solutionMoves[i]);
+            cubeState = st;
+            currentStepIndex = targetIdx;
+            highlightedFace = (targetIdx + 1 < solutionMoves.length) ? solutionMoves[targetIdx + 1][0] : null;
+            updateDirectionHUD((targetIdx + 1 < solutionMoves.length) ? solutionMoves[targetIdx + 1] : null);
+            build3DCube();
+            render2DNet();
+            updateStepHighlight();
+            updatePlaybackControls();
+        }
+
+        function updateStepHighlight() {
+            const total = solutionMoves.length;
+            const nextIdx = currentStepIndex + 1;
+            document.getElementById('step-counter').textContent =
+                nextIdx === total ? `已完成 (${total}/${total})` : `进度：${nextIdx} / ${total}`;
+
+            solutionMoves.forEach((_, idx) => {
+                const chip = document.getElementById(`move-chip-${idx}`);
+                if (!chip) return;
+                chip.classList.remove('current', 'done');
+                if (idx < nextIdx) chip.classList.add('done');
+                else if (idx === nextIdx) {
+                    chip.classList.add('current');
+                    chip.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+                }
+            });
+
+            if (nextIdx < total) {
+                const nextMove = solutionMoves[nextIdx];
+                const info = getMoveDescription(nextMove);
+                document.getElementById('current-move-badge').textContent = nextMove;
+                document.getElementById('current-move-title').textContent = `第 ${nextIdx + 1} 步 · ${info.title}`;
+                document.getElementById('current-move-sub').textContent = info.sub;
+            } else if (total > 0) {
+                document.getElementById('current-move-badge').textContent = '✓';
+                document.getElementById('current-move-title').textContent = '恭喜！魔方已全部还原完成';
+                document.getElementById('current-move-sub').textContent = '可点击“上一步”回看步骤，或点击“随机打乱”重新体验';
+            }
+        }
+
+        function updatePlaybackControls() {
+            const hasMoves = solutionMoves.length > 0;
+            const atStart = currentStepIndex < 0;
+            const atEnd = currentStepIndex >= solutionMoves.length - 1;
+            document.getElementById('btn-prev').disabled = !hasMoves || atStart;
+            document.getElementById('btn-next').disabled = !hasMoves || atEnd;
+            document.getElementById('btn-play').disabled = !hasMoves || atEnd;
+        }
+
+        function stepNext(onComplete) {
+            if (isAnimating || currentStepIndex >= solutionMoves.length - 1) return;
+            const nextIdx = currentStepIndex + 1;
+            const mv = solutionMoves[nextIdx];
+            const speed = parseInt(document.getElementById('speed-select').value, 10);
+
+            animateMove3D(mv, speed, () => {
+                currentStepIndex = nextIdx;
+                updateStepHighlight();
+                updatePlaybackControls();
+                if (onComplete) onComplete();
+            });
+        }
+
+        function stepPrev() {
+            stopAutoPlay();
+            if (isAnimating || currentStepIndex < 0) return;
+            const mv = solutionMoves[currentStepIndex];
+            const invMove = getInverseMove(mv);
+            const speed = parseInt(document.getElementById('speed-select').value, 10);
+
+            animateMove3D(invMove, speed, () => {
+                currentStepIndex--;
+                highlightedFace = (currentStepIndex + 1 < solutionMoves.length) ? solutionMoves[currentStepIndex + 1][0] : null;
+                updateDirectionHUD((currentStepIndex + 1 < solutionMoves.length) ? solutionMoves[currentStepIndex + 1] : null);
+                build3DCube();
+                updateStepHighlight();
+                updatePlaybackControls();
+            });
+        }
+
+        function toggleAutoPlay() {
+            if (isPlaying) {
+                stopAutoPlay();
+                return;
+            }
+            if (currentStepIndex >= solutionMoves.length - 1) return;
+
+            isPlaying = true;
+            document.getElementById('icon-play').classList.add('hidden');
+            document.getElementById('icon-pause').classList.remove('hidden');
+            document.getElementById('text-play').textContent = '暂停播放';
+
+            const playNextLoop = () => {
+                if (!isPlaying) return;
+                if (currentStepIndex >= solutionMoves.length - 1) {
+                    stopAutoPlay();
+                    return;
+                }
+                stepNext(() => {
+                    if (isPlaying && currentStepIndex < solutionMoves.length - 1) {
+                        playTimer = setTimeout(playNextLoop, 180);
+                    } else {
+                        stopAutoPlay();
+                    }
+                });
+            };
+            playNextLoop();
+        }
+
+        function stopAutoPlay() {
+            isPlaying = false;
+            if (playTimer) {
+                clearTimeout(playTimer);
+                playTimer = null;
+            }
+            document.getElementById('icon-play').classList.remove('hidden');
+            document.getElementById('icon-pause').classList.add('hidden');
+            document.getElementById('text-play').textContent = '自动播放';
+        }
+
+        /**
+         * ============================================================================
+         * 7. 拍照 / 传图识别录入模块（同时支持实时摄像头与本地拍照/选图/粘贴）
+         * ============================================================================
+         */
+        let scannerStream = null;
+        let scannerAnimFrame = null;
+        let activeScanFace = 'U';
+        let scannedFacesData = {};
+        let liveSampledFace = new Array(9).fill('U');
+        let scannerMode = 'empty'; // 'camera' | 'photo' | 'empty'
+
+        const SCAN_GUIDES = {
+            U: '请录入<strong>顶面 (U · 白色中心块)</strong>，保持<strong>绿色面</strong>朝向正下方。',
+            F: '保持白面在上方，录入<strong>正面 (F · 绿色中心块)</strong>。',
+            R: '保持白面在上方，录入<strong>右面 (R · 红色中心块)</strong>。',
+            B: '保持白面在上方，录入<strong>背面 (B · 蓝色/黄色中心块)</strong>。',
+            L: '保持白面在上方，录入<strong>左面 (L · 橙色中心块)</strong>。',
+            D: '将魔方向上翻转，录入<strong>底面 (D)</strong>，<strong>绿色面</strong>朝向正上方。'
+        };
+
+        // Lab / HSV 混合色彩距离匹配，大幅提升不同光线下的拍照识别准确率
+        function classifyStickerRGB(r, g, b) {
+            const rn = r / 255, gn = g / 255, bn = b / 255;
+            const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+            const d = max - min;
+            let h = 0;
+            const s = max === 0 ? 0 : d / max;
+            const v = max;
+
+            if (d !== 0) {
+                switch (max) {
+                    case rn: h = ((gn - bn) / d + (gn < bn ? 6 : 0)) * 60; break;
+                    case gn: h = ((bn - rn) / d + 2) * 60; break;
+                    case bn: h = ((rn - gn) / d + 4) * 60; break;
+                }
+            }
+
+            // 低饱和度且较亮 -> 白色
+            if (s < 0.30 && v > 0.42) return 'U';
+
+            const yellowCode = currentScheme === 'western' ? 'D' : 'B';
+            const blueCode = currentScheme === 'western' ? 'B' : 'D';
+
+            if (h >= 40 && h < 85) return yellowCode;      // 黄色
+            if (h >= 85 && h < 170) return 'F';            // 绿色
+            if (h >= 170 && h < 265) return blueCode;      // 蓝色
+            if (h >= 13 && h < 40) return 'L';             // 橙色
+            return 'R';                                    // 红色
+        }
+
+        function sampleFromWorkCanvas(ctx, size) {
+            for (let row = 0; row < 3; row++) {
+                for (let col = 0; col < 3; col++) {
+                    const idx = row * 3 + col;
+                    if (idx === 4) {
+                        liveSampledFace[4] = activeScanFace;
+                        continue;
+                    }
+                    const cx = Math.floor(size * (0.24 + col * 0.26));
+                    const cy = Math.floor(size * (0.24 + row * 0.26));
+                    const imgData = ctx.getImageData(cx - 5, cy - 5, 11, 11).data;
+                    let rSum = 0, gSum = 0, bSum = 0;
+                    const pxCount = imgData.length / 4;
+                    for (let p = 0; p < imgData.length; p += 4) {
+                        rSum += imgData[p];
+                        gSum += imgData[p + 1];
+                        bSum += imgData[p + 2];
+                    }
+                    const detected = classifyStickerRGB(rSum / pxCount, gSum / pxCount, bSum / pxCount);
+                    liveSampledFace[idx] = detected;
+                    const boxEl = document.getElementById(`scan-box-${idx}`);
+                    if (boxEl) boxEl.style.borderColor = COLORS[detected].hex;
+                }
+            }
+            renderScannerPreviewGrid();
+        }
+
+        function renderScannerTabs() {
+            const tabs = document.getElementById('scanner-face-tabs');
+            tabs.innerHTML = SCAN_ORDER.map(face => {
+                const isDone = !!scannedFacesData[face];
+                const isActive = face === activeScanFace;
+                return `<button type="button" onclick="selectScanFace('${face}')" class="flex-1 py-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 ${
+                    isActive ? 'bg-sky-600 text-white shadow' : (isDone ? 'bg-emerald-950/90 text-emerald-300 border border-emerald-700/60' : 'text-slate-400 hover:bg-slate-800')
+                }">
+                    <span>${face}</span>
+                    ${isDone ? '<span class="text-[10px]">✓</span>' : ''}
+                </button>`;
+            }).join('');
+            document.getElementById('scanner-guide-text').innerHTML = SCAN_GUIDES[activeScanFace];
+        }
+
+        function selectScanFace(face) {
+            activeScanFace = face;
+            if (scannedFacesData[face]) {
+                liveSampledFace = scannedFacesData[face].slice();
+            } else {
+                liveSampledFace = new Array(9).fill(face);
+            }
+            renderScannerTabs();
+            renderScannerPreviewGrid();
+        }
+
+        function renderScannerPreviewGrid() {
+            const grid = document.getElementById('scanner-preview-grid');
+            grid.innerHTML = '';
+            for (let i = 0; i < 9; i++) {
+                const code = i === 4 ? activeScanFace : liveSampledFace[i];
+                const c = COLORS[code];
+                const cell = document.createElement('button');
+                cell.type = 'button';
+                cell.className = 'w-7 h-7 rounded-md border flex items-center justify-center text-[10px] font-bold transition';
+                cell.style.backgroundColor = c.hex;
+                cell.style.borderColor = c.border;
+                cell.style.color = c.text;
+                cell.textContent = i === 4 ? activeScanFace : '';
+                if (i !== 4) {
+                    cell.title = '点击切换此格颜色';
+                    cell.addEventListener('click', () => {
+                        const nextIdx = (FACE_ORDER.indexOf(liveSampledFace[i]) + 1) % FACE_ORDER.length;
+                        liveSampledFace[i] = FACE_ORDER[nextIdx];
+                        scannedFacesData[activeScanFace] = liveSampledFace.slice();
+                        renderScannerPreviewGrid();
+                    });
+                }
+                grid.appendChild(cell);
+            }
+        }
+
+        function stopCameraStream() {
+            if (scannerAnimFrame) {
+                cancelAnimationFrame(scannerAnimFrame);
+                scannerAnimFrame = null;
+            }
+            if (scannerStream) {
+                scannerStream.getTracks().forEach(t => t.stop());
+                scannerStream = null;
+            }
+        }
+
+        async function startLiveCamera() {
+            stopCameraStream();
+            const video = document.getElementById('scanner-video');
+            const photoCanvas = document.getElementById('scanner-photo-canvas');
+            const placeholder = document.getElementById('scanner-empty-placeholder');
+            const notice = document.getElementById('camera-fallback-notice');
+
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                notice.classList.remove('hidden');
+                return;
+            }
+
+            try {
+                try {
+                    scannerStream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: 'environment' },
+                        audio: false
+                    });
+                } catch (_) {
+                    scannerStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                }
+
+                scannerMode = 'camera';
+                notice.classList.add('hidden');
+                placeholder.classList.add('hidden');
+                photoCanvas.classList.add('hidden');
+                video.classList.remove('hidden');
+                video.srcObject = scannerStream;
+
+                const workCanvas = document.getElementById('scanner-work-canvas');
+                const size = 240;
+                workCanvas.width = size;
+                workCanvas.height = size;
+                const ctx = workCanvas.getContext('2d', { willReadFrequently: true });
+
+                const loop = () => {
+                    if (!scannerStream || scannerMode !== 'camera') return;
+                    if (video.readyState === video.HAVE_ENOUGH_DATA && !scannedFacesData[activeScanFace]) {
+                        const vw = video.videoWidth || size;
+                        const vh = video.videoHeight || size;
+                        const minSide = Math.min(vw, vh);
+                        const sx = (vw - minSide) / 2;
+                        const sy = (vh - minSide) / 2;
+                        ctx.drawImage(video, sx, sy, minSide, minSide, 0, 0, size, size);
+                        sampleFromWorkCanvas(ctx, size);
+                    }
+                    scannerAnimFrame = requestAnimationFrame(loop);
+                };
+                scannerAnimFrame = requestAnimationFrame(loop);
+            } catch (err) {
+                // 在沙盒预览或无摄像头电脑上优雅降级为照片上传/拍照模式
+                scannerMode = 'empty';
+                notice.classList.remove('hidden');
+            }
+        }
+
+        // 处理上传的图片文件或粘贴的截图
+        function processUploadedImageFile(file) {
+            if (!file || !file.type.startsWith('image/')) return;
+            stopCameraStream();
+
+            const reader = new FileReader();
+            reader.onload = ev => {
+                const img = new Image();
+                img.onload = () => {
+                    scannerMode = 'photo';
+                    const video = document.getElementById('scanner-video');
+                    const photoCanvas = document.getElementById('scanner-photo-canvas');
+                    const placeholder = document.getElementById('scanner-empty-placeholder');
+
+                    video.classList.add('hidden');
+                    placeholder.classList.add('hidden');
+                    photoCanvas.classList.remove('hidden');
+
+                    const size = 280;
+                    photoCanvas.width = size;
+                    photoCanvas.height = size;
+                    const pCtx = photoCanvas.getContext('2d');
+
+                    // 居中裁剪为正方形绘制
+                    const minSide = Math.min(img.width, img.height);
+                    const sx = (img.width - minSide) / 2;
+                    const sy = (img.height - minSide) / 2;
+                    pCtx.drawImage(img, sx, sy, minSide, minSide, 0, 0, size, size);
+
+                    const workCanvas = document.getElementById('scanner-work-canvas');
+                    workCanvas.width = size;
+                    workCanvas.height = size;
+                    const wCtx = workCanvas.getContext('2d', { willReadFrequently: true });
+                    wCtx.drawImage(photoCanvas, 0, 0);
+
+                    // 清除当前面的旧锁定状态以触发最新采样
+                    delete scannedFacesData[activeScanFace];
+                    sampleFromWorkCanvas(wCtx, size);
+                    renderScannerTabs();
+                };
+                img.src = ev.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function openScannerModal() {
+            stopAutoPlay();
+            document.getElementById('scanner-modal').classList.remove('hidden');
+
+            const overlay = document.getElementById('scanner-overlay-grid');
+            overlay.innerHTML = '';
+            for (let i = 0; i < 9; i++) {
+                const box = document.createElement('div');
+                box.id = `scan-box-${i}`;
+                box.className = 'rounded-xl border-2 border-white/80 flex items-center justify-center text-[11px] font-bold text-white drop-shadow';
+                if (i === 4) box.textContent = '中心';
+                overlay.appendChild(box);
+            }
+
+            scannedFacesData = {};
+            selectScanFace('U');
+            startLiveCamera();
+        }
+
+        function captureCurrentScanFace() {
+            liveSampledFace[4] = activeScanFace;
+            scannedFacesData[activeScanFace] = liveSampledFace.slice();
+            renderScannerTabs();
+
+            const curIdx = SCAN_ORDER.indexOf(activeScanFace);
+            for (let offset = 1; offset <= 6; offset++) {
+                const candidate = SCAN_ORDER[(curIdx + offset) % 6];
+                if (!scannedFacesData[candidate]) {
+                    selectScanFace(candidate);
+                    return;
+                }
+            }
+            showMessage('info', '六个面均已保存！', '请点击“完成扫描并导入”将颜色导入魔方。');
+        }
+
+        function finishCameraScan() {
+            if (!scannedFacesData[activeScanFace]) {
+                liveSampledFace[4] = activeScanFace;
+                scannedFacesData[activeScanFace] = liveSampledFace.slice();
+            }
+            const offsets = { U: 0, R: 9, F: 18, D: 27, L: 36, B: 45 };
+            let count = 0;
+            for (const face of FACE_ORDER) {
+                if (scannedFacesData[face]) {
+                    count++;
+                    const base = offsets[face];
+                    for (let i = 0; i < 9; i++) {
+                        cubeState[base + i] = (i === 4) ? face : scannedFacesData[face][i];
+                    }
+                }
+            }
+            closeScannerModal();
+            resetSolutionUI();
+            render2DNet();
+            build3DCube();
+            showMessage('success', `已成功导入 ${count} 个面的颜色`, '请在 2D 展开图核对颜色数量（每色 9 块）后点击求解。');
+        }
+
+        function closeScannerModal() {
+            stopCameraStream();
+            document.getElementById('scanner-modal').classList.add('hidden');
+        }
+
+        /**
+         * ============================================================================
+         * 8. 全局通知与页面初始化
+         * ============================================================================
+         */
+        function showMessage(type, title, desc) {
+            const banner = document.getElementById('message-banner');
+            const box = document.getElementById('message-box');
+            const icon = document.getElementById('message-icon');
+            document.getElementById('message-title').textContent = title;
+            document.getElementById('message-desc').textContent = desc;
+
+            box.className = 'rounded-xl p-3 border flex items-start gap-2.5 text-sm shadow-lg ';
+            if (type === 'error') {
+                box.className += 'bg-rose-950/95 border-rose-700 text-rose-100';
+                icon.innerHTML = `<svg class="w-5 h-5 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`;
+            } else if (type === 'success') {
+                box.className += 'bg-emerald-950/95 border-emerald-700 text-emerald-100';
+                icon.innerHTML = `<svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`;
+            } else {
+                box.className += 'bg-sky-950/95 border-sky-700 text-sky-100';
+                icon.innerHTML = `<svg class="w-5 h-5 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`;
+            }
+            banner.classList.remove('hidden');
+        }
+
+        function hideMessage() {
+            document.getElementById('message-banner').classList.add('hidden');
+        }
+
+        window.onload = function () {
+            for (let f = 0; f < 6; f++) {
+                for (let i = 0; i < 9; i++) cubeState[f * 9 + i] = FACE_ORDER[f];
+            }
+
+            initPalette();
+            render2DNet();
+            build3DCube();
+            init3DStageInteraction();
+
+            document.getElementById('btn-reset').addEventListener('click', resetToSolved);
+            document.getElementById('btn-clear').addEventListener('click', clearColors);
+            document.getElementById('btn-scramble').addEventListener('click', scrambleCube);
+            document.getElementById('btn-solve').addEventListener('click', handleSolve);
+
+            document.getElementById('scheme-select').addEventListener('change', e => switchColorScheme(e.target.value));
+            document.getElementById('preset-select').addEventListener('change', e => applyPresetPattern(e.target.value));
+
+            document.getElementById('btn-apply-formula').addEventListener('click', () => executeCustomFormula(false));
+            document.getElementById('btn-inverse-formula').addEventListener('click', () => executeCustomFormula(true));
+            document.getElementById('custom-formula-input').addEventListener('keydown', e => {
+                if (e.key === 'Enter') executeCustomFormula(false);
+            });
+
+            document.getElementById('btn-open-scanner').addEventListener('click', openScannerModal);
+            document.getElementById('btn-close-scanner').addEventListener('click', closeScannerModal);
+            document.getElementById('btn-retry-camera').addEventListener('click', startLiveCamera);
+            document.getElementById('btn-capture-face').addEventListener('click', captureCurrentScanFace);
+            document.getElementById('btn-finish-scan').addEventListener('click', finishCameraScan);
+
+            document.getElementById('photo-upload-input').addEventListener('change', e => {
+                if (e.target.files && e.target.files[0]) {
+                    processUploadedImageFile(e.target.files[0]);
+                    e.target.value = '';
+                }
+            });
+
+            // 支持扫描弹窗内 Ctrl+V 直接粘贴图片
+            window.addEventListener('paste', e => {
+                if (document.getElementById('scanner-modal').classList.contains('hidden')) return;
+                const items = e.clipboardData ? e.clipboardData.items : [];
+                for (const it of items) {
+                    if (it.type.startsWith('image/')) {
+                        processUploadedImageFile(it.getAsFile());
+                        break;
+                    }
+                }
+            });
+
+            document.getElementById('btn-prev').addEventListener('click', stepPrev);
+            document.getElementById('btn-next').addEventListener('click', () => { stopAutoPlay(); stepNext(); });
+            document.getElementById('btn-play').addEventListener('click', toggleAutoPlay);
+
+            document.getElementById('btn-reset-cam').addEventListener('click', () => {
+                camRotX = -26;
+                camRotY = -36;
+                updateWorldTransform();
+            });
+
+            // 全局键盘快捷键
+            window.addEventListener('keydown', e => {
+                const tag = document.activeElement ? document.activeElement.tagName : '';
+                if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+                if (!document.getElementById('scanner-modal').classList.contains('hidden')) return;
+
+                if (e.key === 'ArrowLeft') { e.preventDefault(); stepPrev(); }
+                else if (e.key === 'ArrowRight') { e.preventDefault(); stopAutoPlay(); stepNext(); }
+                else if (e.key === ' ' && solutionMoves.length > 0) { e.preventDefault(); toggleAutoPlay(); }
+                else if (['1', '2', '3', '4', '5', '6'].includes(e.key)) {
+                    const code = FACE_ORDER[parseInt(e.key, 10) - 1];
+                    const btn = document.querySelector(`.palette-btn[data-color="${code}"]`);
+                    if (btn) btn.click();
+                }
+            });
+        };
+    </script>
+</body>
+</html>
